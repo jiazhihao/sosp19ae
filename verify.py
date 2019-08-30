@@ -441,9 +441,12 @@ axioms = [
     (ForAll([x], ewmul_0(x, const_one_0()) == x),
      lambda :[(s,) for dim in [2,3,4] for s in product(N, repeat=dim)] ),
 
-    # const_iconv and const_pool
-    (ForAll([kx, ky], pool2d_avg_0(kx, ky, 1, 1, PD_MODE_SAME, const_iconv_0(kx, ky)) == const_pool_0(kx, ky)),
-     None),
+    # # const_iconv and const_pool
+    # (ForAll([kx, ky], pool2d_avg_0(kx, ky, 1, 1, PD_MODE_SAME, const_iconv_0(kx, ky)) == const_pool_0(kx, ky)),
+    #  lambda : [(d1, d2)
+    #            for d1 in D
+    #            for d2 in D
+    #  ]),
 
     # enlarge axioms
     (ForAll([sx, sy, acti, kx, ky, x, y], conv2d_0(sx, sy, PD_MODE_SAME, acti, x, y) == conv2d_0(sx, sy, PD_MODE_SAME, acti, x, enlarge_0(kx, ky, y))),

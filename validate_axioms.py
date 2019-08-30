@@ -550,7 +550,7 @@ def print_function(x):
 
 if __name__ == '__main__':
 
-    if False:
+    if True:
         print "Checking that axioms imply lemmas"
         axioms = verify.axioms
         lemmas = verify.lemmas
@@ -570,7 +570,7 @@ if __name__ == '__main__':
         print 'Done' + '\n'*2
 
 
-    if False:
+    if True:
         print "Checking axiom redundancies"
         axioms = verify.axioms
         flags = [z3.Bool('f{}'.format(i)) for i in range(len(axioms))]
@@ -600,7 +600,7 @@ if __name__ == '__main__':
 
     if True:
         print "Symbolically checking axioms for small tensors"
-        axioms = verify.axioms[-7:] #[35:]
+        axioms = verify.axioms #[35:]
         total_combinations = 0
         print now(), "Checking {} axioms...".format(len(axioms))
         spaces = [b() if b is not None else None for a,b in axioms]
