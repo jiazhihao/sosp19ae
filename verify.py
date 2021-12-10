@@ -35,7 +35,10 @@ OP_MERGE_GCONV, \
 OP_CONSTANT_IMM, \
 OP_CONSTANT_ICONV, \
 OP_CONSTANT_ONE, \
-OP_CONSTANT_POOL = range(26)
+OP_CONSTANT_POOL, \
+OP_PARTITION, \
+OP_COMBINE, \
+OP_REPLICATE = range(29)
 
 PM_OP_TYPE, \
 PM_NUM_INPUTS, \
@@ -51,7 +54,9 @@ PM_NUMDIM, \
 PM_AXIS, \
 PM_PERM, \
 PM_OUTSHUFFLE, \
-PM_MERGE_GCONV_COUNT = range(15)
+PM_MERGE_GCONV_COUNT, \
+PM_PARALLEL_DIM, \
+PM_PARALLEL_DEGREE = range(17)
 
 AC_MODE_NONE, \
 AC_MODE_SIGMOID, \
@@ -78,7 +83,10 @@ operator_data = {
     OP_EW_ADD: ('ewadd', (), 2, 1, {2,3,4}),
     OP_EW_MUL: ('ewmul', (), 2, 1, {2,3,4}),
     OP_MATMUL: ('matmul', (), 2, 1, {2}),
-    OP_MUL: ('scalar_mul', (), 2, 1, {2, 3, 4}) # multiply a tensor (first argument) with a scalar (0-D tensor)
+    OP_MUL: ('scalar_mul', (), 2, 1, {2, 3, 4}), # multiply a tensor (first argument) with a scalar (0-D tensor)
+    OP_PARTITION: ('partition', ((PM_PARALLEL_DIM, {0, 1, 2, 3}), (PM_PARALLEL_DEGREE, {2, 4})), 1, 1, {2,3,4}),
+    OP_COMBINE: ('combine', ((PM_PARALLEL_DIM, {0, 1, 2, 3}), (PM_PARALLEL_DEGREE, {2, 4})), 1, 1, {2,3,4}),
+    OP_REPLICATE: ('replicate', ((PM_PARALLEL_DEGREE, {2,4}),), 1, 1, {2,3,4}),
 }
 
 for d in operator_data.values():
@@ -88,6 +96,7 @@ for d in operator_data.values():
 
 x,y,z,w, one = z3.Consts('x y z w one', T)
 sx, sy, kx, ky, pad, acti, ax = z3.Consts('sx sy kx ky pad acti ax', P)
+d0, p0, d1, p1 = z3.Consts('d0 p0 d1 p1', P)
 
 N = [1,2,3,4] # change this to control number of combinations for symbolic validation, e.g., [1,2], [1,3] or [3,4] each provide a reasonable experiment to run and go for coffee (assuming 8 cores)
 D = [1,3]
@@ -96,6 +105,24 @@ D = [1,3]
 axioms = [
 
     # ewadd and ewmul are associative, commutative and distributive
+
+    (ForAll([d0, p0, d1, p1, x], partition_0(d0, p0, partition_0(d1, p1, x)) == partition_0(d1, p1, partition_0(d0, p0, x))),
+      lambda : [(s,s,s,s,s) for dim in [] for s in product(N, repeat=dim)] ),
+
+    (ForAll([d0, p0, p1, x], partition_0(d0, p0, partition_0(d0, p1, x)) == partition_0(d0, p0 * p1, x)),
+      lambda : [(s,s,s,s) for dim in [] for s in product(N, repeat=dim)] ),
+
+    (ForAll([d0, p0, x], partition_0(d0, p0, combine_0(d0, p0, x)) == x),
+      lambda : [(s,s,s) for dim in [] for s in product(N, repeat=dim)] ),
+   
+    (ForAll([d0, p0, x], combine_0(d0, p0, partition_0(d0, p0, x)) == x),
+      lambda : [(s,s,s) for dim in [] for s in product(N, repeat=dim)] ),
+
+    (ForAll([d0, p0, p1, x], partition_0(d0, p0, replicate_0(p1, x)) == replicate_0(p1, partition_0(d0, p0, x))),
+      lambda : [(s,s,s,s) for dim in [] for s in product(N, repeat=dim)] ),
+
+    (ForAll([d0, p0, kx, ky, sx, sy, pad, x], partition_0(d0, p0, pool2d_max_0(kx, ky, sx, sy, pad, x)) == pool2d_max_0(kx, ky, sx, sy, pad, partition_0(d0, p0, x))),
+     lambda : [(s,s,s,s,s,s,s,s) for dim in [] for s in product(N, repeat=dim)] ),
 
     # ewadd is associative
     (ForAll([x,y,z], ewadd_0(x,ewadd_0(y, z)) == ewadd_0(ewadd_0(x,y),z)),

@@ -297,6 +297,8 @@ enum PMParameter {
   PM_PERM,		// Transpose
   PM_OUTSHUFFLE,	// Transpose
   PM_MERGE_GCONV_COUNT, // MergeGConv
+  PM_PARALLEL_DIM,
+  PM_PARALLEL_DEGREE,
 };
 
 enum TNParameter {
@@ -351,6 +353,9 @@ enum OpType {
   OP_CONSTANT_ICONV,
   OP_CONSTANT_ONE,
   OP_CONSTANT_POOL,
+  OP_PARTITION,
+  OP_COMBINE,
+  OP_REPLICATE
 };
 
 //That this must be consistent with python/xflow/_cython/CCore.pxd
