@@ -17,7 +17,7 @@
 #include "xflow/ops.h"
 #include "rules.pb.h"
 typedef int TYPE;
-#define MAX_SIZE 3200
+#define MAX_SIZE 1600
 #define MAX_NUM_OPS 8
 #define MAX_NUM_TENSORS 8
 #define BATCHSIZE 2
@@ -1360,7 +1360,7 @@ public:
     //outputs[0].numReplica = inputs[0].numReplica;
     for (int i = 1; i < n; i++) {
       //if (inputs[i].numReplica != inputs[0].numReplica) return false;
-      for (int j = 0; j < myNumDim; i++)
+      for (int j = 0; j < myNumDim; j++)
         if (inputs[0].degree[j] != inputs[i].degree[j]) return false;
     }
     // Cannot parallelize over the axis dim
@@ -1410,6 +1410,7 @@ public:
     */
     outputs[0].opIdx = opIdx;
     outputs[0].tsIdx = 0;
+    if (!outputs[0].valid()) return false;
     return true;
   }
   bool compute(const TensorTemp& x1, int opIdx)
@@ -1485,6 +1486,7 @@ public:
             right = parent;
           }
           outputs[i].dim[j] = oldPos - curPos;
+          outputs[i].degree[j] = 1;
           oldPos = curPos;
           parent = left;
           outputs[i].split[j] = right;
@@ -1955,6 +1957,12 @@ void pb_fill_op(const GraphTemp::GraphOp& graphOp,
       pb_fill_parameter(PM_ACTI, activation, pbOp);
       break;
     }
+    case OP_LINEAR:
+    {
+      LinearTemp* linear = (LinearTemp*) graphOp.opTemp;
+      pb_fill_parameter(PM_ACTI, linear->mode, pbOp);
+      break;
+    }
     case OP_POOL2D_AVG:
     case OP_POOL2D_MAX:
     {
@@ -2002,7 +2010,15 @@ void pb_fill_op(const GraphTemp::GraphOp& graphOp,
     case OP_REPLICATE:
     {
       Replicate* replicate = (Replicate*) graphOp.opTemp;
+      pb_fill_parameter(PM_PARALLEL_DIM, replicate->parallel_dim, pbOp);
       pb_fill_parameter(PM_PARALLEL_DEGREE, replicate->parallel_degree, pbOp);
+      break;
+    }
+    case OP_REDUCE:
+    {
+      Reduce* reduce = (Reduce*) graphOp.opTemp;
+      pb_fill_parameter(PM_PARALLEL_DIM, reduce->parallel_dim, pbOp);
+      pb_fill_parameter(PM_PARALLEL_DEGREE, reduce->parallel_degree, pbOp);
       break;
     }
     case OP_RELU:
@@ -2187,11 +2203,27 @@ int main(int argc, char **argv)
   operator_names[ops.back()] = "Reduce(4,2)";
   ops.push_back(new LinearTemp(AC_MODE_NONE));
   operator_names[ops.back()] = "Linear";
-#ifdef DEADCODE
+  ops.push_back(new LinearTemp(AC_MODE_RELU));
+  operator_names[ops.back()] = "Linear+ReLU";
   ops.push_back(new ElementTemp(OP_EW_ADD));
   operator_names[ops.back()] = "EWAdd";
   ops.push_back(new ElementTemp(OP_EW_MUL));
   operator_names[ops.back()] = "EWMul";
+  ops.push_back(new ActivationTemp(OP_RELU));
+  operator_names[ops.back()] = "Relu";
+  ops.push_back(new ConcatTemp(2/*n*/, 3/*numDim*/, 2/*axis*/));
+  operator_names[ops.back()] = "Concat_2";
+  ops.push_back(new ConcatTemp(2/*n*/, 3/*numDim*/, 1/*axis*/));
+  operator_names[ops.back()] = "Concat_1";
+  ops.push_back(new ConcatTemp(2/*n*/, 3/*numDim*/, 0/*axis*/));
+  operator_names[ops.back()] = "Concat_0";
+  ops.push_back(new SplitTemp(2/*n*/, 2/*axis*/));
+  operator_names[ops.back()] = "Split_2";
+  ops.push_back(new SplitTemp(2/*n*/, 1/*axis*/));
+  operator_names[ops.back()] = "Split_1";
+  ops.push_back(new SplitTemp(2/*n*/, 0/*axis*/));
+  operator_names[ops.back()] = "Split_0";
+#ifdef DEADCODE
   ops.push_back(new Conv2DTemp(3, 3, 1, 1, true, false));
   operator_names[ops.back()] = "Conv3x3S";
   ops.push_back(new Conv2DTemp(3, 3, 1, 1, true, true));
@@ -2220,20 +2252,10 @@ int main(int argc, char **argv)
   //operator_names[ops.back()] = "Enlarge3x3";
   ops.push_back(new ScalarMulTemp());
   operator_names[ops.back()] = "ScalarMul";
-  ops.push_back(new ActivationTemp(OP_RELU));
-  operator_names[ops.back()] = "Relu";
-  ops.push_back(new ConcatTemp(2/*n*/, 2/*numDim*/, 1/*axis*/));
-  operator_names[ops.back()] = "Concat_1";
-  ops.push_back(new ConcatTemp(2/*n*/, 2/*numDim*/, 0/*axis*/));
-  operator_names[ops.back()] = "Concat_0";
   ops.push_back(new ConcatTemp(2/*n*/, 4/*numDim*/, 1/*axis*/));
   operator_names[ops.back()] = "Concat_1";
   ops.push_back(new ConcatTemp(2/*n*/, 4/*numDim*/, 0/*axis*/));
   operator_names[ops.back()] = "Concat_0";
-  ops.push_back(new SplitTemp(2/*n*/, 1/*axis*/));
-  operator_names[ops.back()] = "Split_1";
-  ops.push_back(new SplitTemp(2/*n*/, 0/*axis*/));
-  operator_names[ops.back()] = "Split_0";
 #endif
   //const int trans10[2] = {1, 0};
   // Should enable shuffle = true one
@@ -2241,6 +2263,7 @@ int main(int argc, char **argv)
   //operator_names[ops.back()] = "Transpose_10";
   //ops.push_back(new TransposeTemp(2/*n*/, trans10, true/*shuffle*/));
   //operator_names[ops.back()] = "TransposeShuffle_10";
+#ifdef DEADCODE
   // <test0>
   Partition* part = new Partition(1, 2);
   Replicate* repl = new Replicate(0, 2);
@@ -2255,6 +2278,7 @@ int main(int argc, char **argv)
   assert(linear->compute(x1, w1, 0));
   o2 = linear->outputs[0];
   assert(o1==o2);
+#endif
 #ifdef DEADCODE
   // <test1>
   MatmulTemp* matmul = new MatmulTemp(AC_MODE_NONE);
@@ -2280,20 +2304,19 @@ int main(int argc, char **argv)
   o5.print("o5");
   assert(o1 == o5);
 #endif
-#ifdef DEADCODE
   // <test2>
-  MatmulTemp* matmul = new MatmulTemp(AC_MODE_NONE);
-  SplitTemp* split = new SplitTemp(2/*n*/, 1/*axis*/);
-  ConcatTemp* concat = new ConcatTemp(2/*n*/, 2/*numDim*/, 1/*axis*/);
+  LinearTemp* linear = new LinearTemp(AC_MODE_NONE);
+  SplitTemp* split = new SplitTemp(2/*n*/, 2/*axis*/);
+  ConcatTemp* concat = new ConcatTemp(2/*n*/, 3/*numDim*/, 1/*axis*/);
   TensorTemp o1, o2, o3, o4, o5, o6;
-  assert(matmul->compute(x1, w1, 0));
-  o1 = matmul->outputs[0];
-  assert(matmul->compute(x1, w2, 1));
-  o2 = matmul->outputs[0];
+  assert(linear->compute(x1, w1, 0));
+  o1 = linear->outputs[0];
+  assert(linear->compute(x1, w2, 1));
+  o2 = linear->outputs[0];
   assert(concat->compute(w1, w2, 0));
   o3 = concat->outputs[0];
-  assert(matmul->compute(x1, o3, 1));
-  o4 = matmul->outputs[0];
+  assert(linear->compute(x1, o3, 1));
+  o4 = linear->outputs[0];
   assert(split->compute(o4, 2));
   o5 = split->outputs[0];
   o6 = split->outputs[1];
@@ -2302,7 +2325,6 @@ int main(int argc, char **argv)
   o5.print("o5");
   assert(o1 == o5);
   assert(o2 == o6);
-#endif
 #ifdef DEADCODE
   // <test3>
   ConstantPoolTemp* constant = new ConstantPoolTemp(w13.numDim, w13.dim);
