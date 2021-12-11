@@ -17,7 +17,7 @@
 #include "xflow/ops.h"
 #include "rules.pb.h"
 typedef int TYPE;
-#define MAX_SIZE 512
+#define MAX_SIZE 3200
 #define MAX_NUM_OPS 8
 #define MAX_NUM_TENSORS 8
 #define BATCHSIZE 2
@@ -32,14 +32,14 @@ TYPE relu_function(TYPE input)
 }
 
 struct TensorTemp {
-  int numDim, numReplica, dim[MAX_DIM], stride[MAX_DIM], degree[MAX_DIM];
+  int numDim, dim[MAX_DIM], stride[MAX_DIM], degree[MAX_DIM];
   SplitInfo split[MAX_DIM];
   TYPE data[MAX_SIZE];
   // Do not compare the following metadata for equation checks
   int opIdx, tsIdx;
   inline bool operator==(const TensorTemp& tt) const {
     if (tt.numDim != numDim) return false;
-    if (tt.numReplica != numReplica) return false;
+    //if (tt.numReplica != numReplica) return false;
     int total = 1;
     for (int i = 0; i < numDim; i++) {
       if (dim[i] != tt.dim[i]) return false;
@@ -55,7 +55,7 @@ struct TensorTemp {
   TensorTemp& operator=(const TensorTemp& tt)
   {
     numDim = tt.numDim;
-    numReplica = tt.numReplica;
+    //numReplica = tt.numReplica;
     int total = 1;
     for (int i = 0; i < numDim; i++) {
       dim[i] = tt.dim[i];
@@ -77,6 +77,7 @@ struct TensorTemp {
       if (degree[i] <= 0) return false;
       if (dim[i] % degree[i] != 0) return false;
     }
+    if (dim[0] != degree[0]) return false;
     return true;
   }
   inline int size(void) const
@@ -88,17 +89,40 @@ struct TensorTemp {
   }
   inline TYPE get_value(int n, int c, int h, int w) const
   {
-    assert(numDim == 4);
+    assert(false);
+    return data[0];
+  }
+  inline TYPE get_value(int r, int n, int c, int h, int w) const
+  {
+    assert(numDim == 5);
     int offset = n * stride[0] + c * stride[1] + h * stride[2] + w * stride[3];
     assert(offset >= 0 && offset < MAX_SIZE);
     return data[offset];
   }
   inline TYPE get_value(int n, int c) const
   {
-    assert(numDim == 2);
-    int offset = n * stride[0] + c * stride[1];
+    assert(false);
+    return data[0];
+  }
+  inline TYPE get_value(int r, int n, int c) const
+  {
+    assert(numDim == 3);
+    assert(r >= 0 && r < dim[0]);
+    assert(n >= 0 && n < dim[1]);
+    assert(c >= 0 && c < dim[2]);
+    int offset = r * stride[0] + n * stride[1] + c * stride[2];
     assert(offset >= 0 && offset < MAX_SIZE);
     return data[offset];
+  }
+  inline void add_value(int r, int n, int c, TYPE val)
+  {
+    assert(numDim == 3);
+    assert(r >= 0 && r < dim[0]);
+    assert(n >= 0 && n < dim[1]);
+    assert(c >= 0 && c < dim[2]);
+    int offset = r * stride[0] + n * stride[1] + c * stride[2];
+    assert(offset >= 0 && offset < MAX_SIZE);
+    data[offset] += val;
   }
   inline void set_value(int n, int c, int h, int w, TYPE val)
   {
@@ -300,7 +324,6 @@ public:
     if (x1.numDim <= parallel_dim) return false;
     assert(x1.valid());
     outputs[0].numDim = x1.numDim;
-    outputs[0].numReplica = x1.numReplica;
     for (int i = 0; i < x1.numDim; i++) {
       outputs[0].dim[i] = x1.dim[i];
       outputs[0].degree[i] = x1.degree[i];
@@ -339,7 +362,6 @@ public:
     if (x1.numDim <= parallel_dim) return false;
     assert(x1.valid());
     outputs[0].numDim = x1.numDim;
-    outputs[0].numReplica = x1.numReplica;
     for (int i = 0; i < x1.numDim; i++) {
       outputs[0].dim[i] = x1.dim[i];
       outputs[0].degree[i] = x1.degree[i];
@@ -367,28 +389,52 @@ public:
 
 class Replicate : public OpTemp {
 public:
-  Replicate(int _degree)
-  : OpTemp(1, 1, OP_REPLICATE), parallel_degree(_degree)
+  Replicate(int _dim, int _degree)
+  : OpTemp(1, 1, OP_REPLICATE), parallel_dim(_dim), parallel_degree(_degree)
   {}
   bool compute(int n, TensorTemp* inputs, int opIdx)
   {
     assert(false);
     return false;
   }
+  void dfs(TensorTemp& output, const TensorTemp& input,
+           int d, int myPos, int inPos)
+  {
+    if (d == input.numDim) {
+      assert(myPos >= 0 && myPos < output.size());
+      assert(inPos >= 0 && inPos < input.size());
+      output.data[myPos] = input.data[inPos];
+    } else {
+      for (int i = 0; i < output.dim[d]; i++) {
+        if (d == parallel_dim) {
+          dfs(output, input, d+1, myPos+i*output.stride[d], inPos+(i/parallel_degree)*input.stride[d]);
+        } else {
+          dfs(output, input, d+1, myPos+i*output.stride[d], inPos+i*input.stride[d]);
+        }
+      }
+    }
+  }
   bool compute(const TensorTemp& x1, int opIdx)
   {
     assert(x1.valid());
     outputs[0].numDim = x1.numDim;
-    outputs[0].numReplica = x1.numReplica * parallel_degree;
     for (int i = 0; i < x1.numDim; i++) {
       outputs[0].dim[i] = x1.dim[i];
       outputs[0].degree[i] = x1.degree[i];
       outputs[0].stride[i] = x1.stride[i];
       outputs[0].split[i] = x1.split[i];
     }
+    outputs[0].dim[parallel_dim] *= parallel_degree;
+    outputs[0].degree[parallel_dim] *= parallel_degree;
+    // recompute stride
+    int size = 1;
+    for (int i = x1.numDim-1; i >= 0; i--) {
+      outputs[0].stride[i] = size;
+      size *= outputs[0].dim[i];
+    }
+
     if (!outputs[0].valid()) return false;
-    for (int i = 0; i < x1.size(); i++)
-      outputs[0].data[i] = x1.data[i];
+    dfs(outputs[0], x1, 0, 0, 0);
     outputs[0].opIdx = opIdx;
     outputs[0].tsIdx = 0;
     return true;
@@ -399,7 +445,70 @@ public:
     return false;
   }
 public:
-  int parallel_degree;
+  int parallel_dim, parallel_degree;
+};
+
+class Reduce : public OpTemp {
+public:
+  Reduce(int _dim, int _degree)
+  : OpTemp(1, 1, OP_REDUCE), parallel_dim(_dim), parallel_degree(_degree)
+  {}
+  bool compute(int n, TensorTemp* inputs, int opIdx)
+  {
+    assert(false);
+    return false;
+  }
+  void dfs(TensorTemp& output, const TensorTemp& input,
+           int d, int myPos, int inPos)
+  {
+    if (d == input.numDim) {
+      assert(myPos >= 0 && myPos < output.size());
+      assert(inPos >= 0 && inPos < input.size());
+      output.data[myPos] += input.data[inPos];
+    } else {
+      for (int i = 0; i < input.dim[d]; i++) {
+        if (d == parallel_dim) {
+          dfs(output, input, d+1, myPos+(i/parallel_degree)*output.stride[d], inPos+i*input.stride[d]);
+        } else {
+          dfs(output, input, d+1, myPos+i*output.stride[d], inPos+i*input.stride[d]);
+        }
+      }
+    }
+  }
+  bool compute(const TensorTemp& x1, int opIdx)
+  {
+    assert(x1.valid());
+    outputs[0].numDim = x1.numDim;
+    if (x1.degree[parallel_dim] % parallel_degree != 0) return false;
+    for (int i = 0; i < x1.numDim; i++) {
+      outputs[0].dim[i] = x1.dim[i];
+      outputs[0].degree[i] = x1.degree[i];
+      outputs[0].stride[i] = x1.stride[i];
+      outputs[0].split[i] = x1.split[i];
+    }
+    outputs[0].dim[parallel_dim] /= parallel_degree;
+    outputs[0].degree[parallel_dim] /= parallel_degree;
+    // recompute stride
+    int size = 1;
+    for (int i = x1.numDim-1; i >= 0; i--) {
+      outputs[0].stride[i] = size;
+      size *= outputs[0].dim[i];
+    }
+    assert(outputs[0].valid());
+    for (int i = 0; i < size; i++)
+      outputs[0].data[i] = 0;
+    dfs(outputs[0], x1, 0, 0, 0);
+    outputs[0].opIdx = opIdx;
+    outputs[0].tsIdx = 0;
+    return true;
+  }
+  bool compute(const TensorTemp& x1, const TensorTemp& x2, int opIdx)
+  {
+    assert(false);
+    return false;
+  }
+public:
+  int parallel_dim, parallel_degree;
 };
 
 class ScalarMulTemp : public OpTemp {
@@ -421,7 +530,7 @@ public:
   {
     if (scalar.numDim != 0) return false;
     outputs[0].numDim = input.numDim;
-    outputs[0].numReplica = input.numReplica;
+    //outputs[0].numReplica = input.numReplica;
     int total = 1;
     for (int i = 0; i < input.numDim; i++) {
       outputs[0].dim[i] = input.dim[i];
@@ -533,7 +642,7 @@ public:
   bool compute(int opIdx)
   {
     outputs[0].numDim = ndim;
-    outputs[0].numReplica = 1;
+    //outputs[0].numReplica = 1;
     for (int i = ndim-1; i >= 0; i--) {
       outputs[0].dim[i] = dims[i];
       outputs[0].degree[i] = 1;
@@ -563,7 +672,7 @@ public:
   bool compute(int opIdx)
   {
     outputs[0].numDim = ndim;
-    outputs[0].numReplica = 1;
+    //outputs[0].numReplica = 1;
     for (int i = ndim-1; i >= 0; i--) {
       outputs[0].dim[i] = dims[i];
       outputs[0].degree[i] = 1;
@@ -600,7 +709,7 @@ public:
   bool compute(int opIdx)
   {
     outputs[0].numDim = ndim;
-    outputs[0].numReplica = 1;
+    //outputs[0].numReplica = 1;
     for (int i = ndim-1; i >= 0; i--) {
       outputs[0].dim[i] = dims[i];
       outputs[0].degree[i] = 1;
@@ -630,7 +739,7 @@ public:
   bool compute(int opIdx)
   {
     outputs[0].numDim = ndim;
-    outputs[0].numReplica = 1;
+    //outputs[0].numReplica = 1;
     for (int i = ndim-1; i >= 0; i--) {
       outputs[0].dim[i] = dims[i];
       outputs[0].degree[i] = 1;
@@ -673,9 +782,9 @@ public:
     if ((weight.dim[2] != kernelH) || (weight.dim[3] != kernelW)) return false;
     if (input.degree[2] != weight.degree[2]) return false;
     if (input.degree[3] != weight.degree[3]) return false;
-    if (input.degree[0] != weight.numReplica) return false;
+    //if (input.degree[0] != weight.numReplica) return false; //TODO
     if (input.degree[1] != 1) return false;
-    if (weight.degree[0] != input.numReplica) return false;
+    //if (weight.degree[0] != input.numReplica) return false; // TODO
     if (weight.degree[1] != 1) return false;
     //if (input.dim[0] != BATCHSIZE && input.dim[0] != 2 * BATCHSIZE) return false;
     //if (input.dim[1] != weight.dim[1]) return false;
@@ -686,7 +795,7 @@ public:
     int padT, padL;
     if (samePad) {
       outputs[0].numDim = 4;
-      outputs[0].numReplica = 1;
+      //outputs[0].numReplica = 1;
       outputs[0].dim[0] = input.dim[0];
       outputs[0].dim[1] = weight.dim[0];
       outputs[0].dim[2] = (input.dim[2] + strideH - 1) / strideH;
@@ -703,7 +812,7 @@ public:
       padL = padW / 2;
     } else {
       outputs[0].numDim = 4;
-      outputs[0].numReplica = 1;
+      //outputs[0].numReplica = 1;
       outputs[0].dim[0] = input.dim[0];
       outputs[0].dim[1] = weight.dim[0];
       outputs[0].dim[2] = (input.dim[2] - weight.dim[2]) / strideH + 1;
@@ -773,11 +882,11 @@ public:
   bool compute(const TensorTemp& input, int opIdx)
   {
     if (input.numDim != 4) return false;
-    if (input.numReplica > 1) return false;
+    //if (input.numReplica > 1) return false;
     int padT, padL;
     if (samePad) {
       outputs[0].numDim = 4;
-      outputs[0].numReplica = 1;
+      //outputs[0].numReplica = 1;
       outputs[0].dim[0] = input.dim[0];
       outputs[0].dim[1] = input.dim[1];
       outputs[0].dim[2] = (input.dim[2] + strideH - 1) / strideH;
@@ -794,7 +903,7 @@ public:
       padL = padW / 2;
     } else {
       outputs[0].numDim = 4;
-      outputs[0].numReplica = 1;
+      //outputs[0].numReplica = 1;
       outputs[0].dim[0] = input.dim[0];
       outputs[0].dim[1] = input.dim[1];
       outputs[0].dim[2] = (input.dim[2] - kernelH) / strideH + 1;
@@ -910,6 +1019,85 @@ public:
   bool samePad;
 };
 
+class LinearTemp : public OpTemp {
+public:
+  LinearTemp(ActiMode _mode)
+  : OpTemp(2, 1, OP_LINEAR), mode(_mode)
+  {}
+  bool compute(int n, TensorTemp* inputs, int opIdx)
+  {
+    assert(false);
+    return false;
+  }
+  bool compute(const TensorTemp& x1, int opIdx)
+  {
+    assert(false);
+    return false;
+  }
+  bool compute(const TensorTemp& input, const TensorTemp& weight, int opIdx)
+  {
+#ifdef NO_SAME_INPUTS
+    if (input == weight) return false;
+#endif
+    if (input.numDim != 3 || weight.numDim != 3) return false;
+    assert(input.valid());
+    assert(weight.valid());
+    //if (input.dim[0] != BATCHSIZE) return false;
+    if (input.dim[2] != weight.dim[2]) return false;
+    if (weight.dim[1] == BATCHSIZE) return false;
+    if (input.degree[0] != weight.degree[1]) return false;
+    if (input.degree[1] != weight.degree[0]) return false;
+    if (input.degree[2] != weight.degree[2]) return false;
+    outputs[0].numDim = 3;
+    outputs[0].dim[0] = input.degree[2];
+    outputs[0].dim[1] = input.dim[1];
+    outputs[0].dim[2] = weight.dim[1];
+    outputs[0].degree[0] = input.degree[2];
+    outputs[0].degree[1] = input.degree[1];
+    outputs[0].degree[2] = input.degree[0];
+    outputs[0].stride[0] = outputs[0].dim[1] * outputs[0].dim[2];
+    outputs[0].stride[1] = outputs[0].dim[2];
+    outputs[0].stride[2] = 1;
+    outputs[0].split[0] = SplitInfo::NO_SPLIT;
+    outputs[0].split[1] = input.split[1];
+    outputs[0].split[2] = weight.split[1];
+    assert(outputs[0].valid());
+    for (int i = 0; i < outputs[0].size(); i++)
+      outputs[0].data[i] = 0;
+    int reduce_size = input.dim[2] / input.degree[2];
+    for (int repl_idx = 0; repl_idx < outputs[0].degree[0]; repl_idx++)
+      for (int batch_idx = 0; batch_idx < outputs[0].degree[1]; batch_idx++)
+        for (int out_idx = 0; out_idx < outputs[0].degree[2]; out_idx++) {
+          int batch_size = outputs[0].dim[1] / outputs[0].degree[1];
+          int output_size = outputs[0].dim[2] / outputs[0].degree[2];
+          int input_size = input.dim[2] / input.degree[2];
+          for (int i = 0; i < batch_size; i++)
+            for (int j = 0; j < output_size; j++)
+              for (int k = 0; k < input_size; k++) {
+                int value = input.get_value(out_idx, batch_idx * batch_size + i, repl_idx * input_size + k)
+                          * weight.get_value(batch_idx, out_idx * output_size + j, repl_idx * input_size + k);
+                outputs[0].add_value(repl_idx, batch_idx * batch_size + i, out_idx * output_size + j, value);
+              }
+        }
+    if (mode == AC_MODE_RELU) {
+      for (int i = 0; i < outputs[0].size(); i++)
+        outputs[0].data[i] = relu_function(outputs[0].data[i]);
+    } else if (mode == AC_MODE_SIGMOID) {
+      assert(false);
+    } else if (mode == AC_MODE_TANH) {
+      assert(false);
+    } else {
+      assert(mode == AC_MODE_NONE);
+    }
+    outputs[0].opIdx = opIdx;
+    outputs[0].tsIdx = 0;
+    return true;
+  }
+public:
+  ActiMode mode;
+};
+
+
 class MatmulTemp : public OpTemp {
 public:
   MatmulTemp(ActiMode _mode)
@@ -934,11 +1122,11 @@ public:
     //if (input.dim[0] != BATCHSIZE) return false;
     if (input.dim[1] != weight.dim[0]) return false;
     if (weight.dim[0] == BATCHSIZE) return false;
-    if (input.degree[0] != weight.numReplica) return false;
-    if (weight.degree[1] != input.numReplica) return false;
+    //if (input.degree[0] != weight.numReplica) return false; // TODO
+    //if (weight.degree[1] != input.numReplica) return false; // TODO
     if (input.degree[1] != weight.degree[0]) return false;
     outputs[0].numDim = 2;
-    outputs[0].numReplica = 1;
+    //outputs[0].numReplica = 1;
     outputs[0].dim[0] = input.dim[0];
     outputs[0].dim[1] = weight.dim[1];
     outputs[0].degree[0] = input.degree[0];
@@ -994,7 +1182,7 @@ public:
   bool compute(const TensorTemp& x1, const TensorTemp& x2, int opIdx)
   {
     if (x1.numDim != x2.numDim) return false;
-    if (x1.numReplica != x2.numReplica) return false;
+    //if (x1.numReplica != x2.numReplica) return false;
     int numDim = x1.numDim;
     int total = 1;
     for (int i = 0; i < numDim; i++) {
@@ -1007,7 +1195,7 @@ public:
       total *= x1.dim[i];
     }
     outputs[0].numDim = numDim;
-    outputs[0].numReplica = x1.numReplica;
+    //outputs[0].numReplica = x1.numReplica;
     for (int i = 0; i < numDim; i++) {
       outputs[0].dim[i] = x1.dim[i];
       outputs[0].degree[i] = x1.degree[i];
@@ -1043,7 +1231,7 @@ public:
   bool compute(const TensorTemp& x1, int opIdx)
   {
     outputs[0].numDim = x1.numDim;
-    outputs[0].numReplica = x1.numReplica;
+    //outputs[0].numReplica = x1.numReplica;
     int total = 1;
     for (int i = 0; i < x1.numDim; i++) {
       outputs[0].dim[i] = x1.dim[i];
@@ -1106,7 +1294,7 @@ public:
   {
     if (x.numDim != myNumDim) return false;
     outputs[0].numDim = myNumDim;
-    outputs[0].numReplica = x.numReplica;
+    //outputs[0].numReplica = x.numReplica;
     for (int i = 0; i < myNumDim; i++) {
       outputs[0].dim[i] = x.dim[perm[i]];
       outputs[0].degree[i] = x.degree[perm[i]];
@@ -1169,9 +1357,9 @@ public:
         if ((j != axis) && (inputs[0].dim[j] != inputs[i].dim[j]))
           return false;
     outputs[0].numDim = myNumDim;
-    outputs[0].numReplica = inputs[0].numReplica;
+    //outputs[0].numReplica = inputs[0].numReplica;
     for (int i = 1; i < n; i++) {
-      if (inputs[i].numReplica != inputs[0].numReplica) return false;
+      //if (inputs[i].numReplica != inputs[0].numReplica) return false;
       for (int j = 0; j < myNumDim; i++)
         if (inputs[0].degree[j] != inputs[i].degree[j]) return false;
     }
@@ -1282,7 +1470,7 @@ public:
     int oldPos = x1.dim[axis], curPos;
     for (int i = numOutputs - 1; i >= 0; i--) {
       outputs[i].numDim = x1.numDim;
-      outputs[i].numReplica = x1.numReplica;
+      //outputs[i].numReplica = x1.numReplica;
       int size = 1;
       for (int j = x1.numDim - 1; j >= 0; j--) {
         if (j != axis) {
@@ -1354,7 +1542,7 @@ namespace std {
       size_t res = 17;
       int total = 1;
       res = res * 31 + hash<int>()(tt.numDim);
-      res = res * 31 + hash<int>()(tt.numReplica);
+      //res = res * 31 + hash<int>()(tt.numReplica);
       for (int i = 0; i < tt.numDim; i++) {
         res = res * 31 + hash<int>()(tt.dim[i]);
         res = res * 31 + hash<int>()(tt.degree[i]);
@@ -1568,7 +1756,7 @@ void dfs(int depth,
   } else {
     hashmap[hashKey] = graph;
   }
-  if (depth >= 2) return; // MAX_NUM_OPS
+  if (depth >= 4) return; // MAX_NUM_OPS
   for (int i = 0; i < ops.size(); i++)
     switch (ops[i]->type) {
       case OP_EW_ADD:
@@ -1587,6 +1775,7 @@ void dfs(int depth,
         break;
       }
       case OP_CONV2D:
+      case OP_LINEAR:
       {
         OpTemp* op = ops[i];
         for (int j = 0; j < inputs.size(); j++) {
@@ -1634,6 +1823,7 @@ void dfs(int depth,
       case OP_COMBINE:
       case OP_PARTITION:
       case OP_REPLICATE:
+      case OP_REDUCE:
       case OP_RELU:
       case OP_ENLARGE:
       case OP_TRANSPOSE:
@@ -1701,15 +1891,16 @@ void dfs(int depth,
     }
 }
 
-void init_tensor_temp(TensorTemp& tt, std::string name, int opIdx, int tsIdx, int n = 0, int c = 0, int h = 0, int w = 0)
+void init_tensor_temp(TensorTemp& tt, std::string name, int opIdx, int tsIdx, int r = 0, int n = 0, int c = 0, int h = 0, int w = 0)
 {
   variable_names[opIdx] = name;
   tt.numDim = 0;
-  tt.numReplica = 1;
-  if (n > 0) { tt.numDim ++; tt.dim[0] = n; tt.split[0] = SplitInfo::NO_SPLIT;}
-  if (c > 0) { tt.numDim ++; tt.dim[1] = c; tt.split[1] = SplitInfo::NO_SPLIT;}
-  if (h > 0) { tt.numDim ++; tt.dim[2] = h; tt.split[2] = SplitInfo::NO_SPLIT;}
-  if (w > 0) { tt.numDim ++; tt.dim[3] = w; tt.split[3] = SplitInfo::NO_SPLIT;}
+  //tt.numReplica = 1;
+  if (r > 0) { tt.dim[tt.numDim] = r; tt.split[tt.numDim] = SplitInfo::NO_SPLIT; tt.numDim++;}
+  if (n > 0) { tt.dim[tt.numDim] = n; tt.split[tt.numDim] = SplitInfo::NO_SPLIT; tt.numDim++;}
+  if (c > 0) { tt.dim[tt.numDim] = c; tt.split[tt.numDim] = SplitInfo::NO_SPLIT; tt.numDim++;}
+  if (h > 0) { tt.dim[tt.numDim] = h; tt.split[tt.numDim] = SplitInfo::NO_SPLIT; tt.numDim++;}
+  if (w > 0) { tt.dim[tt.numDim] = w; tt.split[tt.numDim] = SplitInfo::NO_SPLIT; tt.numDim++;}
   int size = 1;
   for (int i = tt.numDim - 1; i >= 0; i --) {
     tt.degree[i] = 1;
@@ -1723,6 +1914,7 @@ void init_tensor_temp(TensorTemp& tt, std::string name, int opIdx, int tsIdx, in
   for (int i = 0; i < total; i++)
     //tt.data[i] = (std::rand() % 2000 - 1000);
     tt.data[i] = std::rand() - RAND_MAX / 2;
+  assert(tt.valid());
 }
 
 void init_graph_temp(GraphTemp& graph)
@@ -1901,78 +2093,101 @@ int main(int argc, char **argv)
   std::vector<TensorTemp> inputs;
   GraphTemp graph;
   init_graph_temp(graph);
-  // Create 2D tensors
+  // Create 3D tensors
   TensorTemp x1, x2, x3, w1, w2, w3;
-  init_tensor_temp(x1, "x1", -1, 0, BATCHSIZE, 4);
+  init_tensor_temp(x1, "x1", -1, 0, 1, BATCHSIZE, 4);
   inputs.push_back(x1);
-  init_tensor_temp(x2, "x2", -2, 0, BATCHSIZE, 4);
+  init_tensor_temp(x2, "x2", -2, 0, 1, BATCHSIZE, 4);
   inputs.push_back(x2);
-  init_tensor_temp(x3, "x3", -3, 0, BATCHSIZE, 4);
+  init_tensor_temp(x3, "x3", -3, 0, 1, BATCHSIZE, 4);
   inputs.push_back(x3);
-  init_tensor_temp(w1, "w1", -4, 0, 4, 4);
+  init_tensor_temp(w1, "w1", -4, 0, 1, 4, 4);
   inputs.push_back(w1);
-  init_tensor_temp(w2, "w2", -5, 0, 4, 4);
+  init_tensor_temp(w2, "w2", -5, 0, 1, 4, 4);
   inputs.push_back(w2);
-  init_tensor_temp(w3, "w3", -6, 0, 4, 4);
+  init_tensor_temp(w3, "w3", -6, 0, 1, 4, 4);
   inputs.push_back(w3);
-  // Create 4D tensors
+  // Create 5D tensors
   TensorTemp i1, i2, i3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14;
-  init_tensor_temp(i1, "i1", -7, 0, BATCHSIZE, 4, 5, 5);
+  init_tensor_temp(i1, "i1", -7, 0, 1, BATCHSIZE, 4, 5, 5);
   inputs.push_back(i1);
-  init_tensor_temp(i2, "i2", -8, 0, BATCHSIZE, 4, 5, 5);
+  init_tensor_temp(i2, "i2", -8, 0, 1, BATCHSIZE, 4, 5, 5);
   inputs.push_back(i2);
-  init_tensor_temp(i3, "i3", -9, 0, BATCHSIZE, 4, 5, 5);
+  init_tensor_temp(i3, "i3", -9, 0, 1, BATCHSIZE, 4, 5, 5);
   inputs.push_back(i3);
-  init_tensor_temp(w4, "w4", -10, 0, 4, 4, 3, 3);
+  init_tensor_temp(w4, "w4", -10, 0, 1, 4, 4, 3, 3);
   inputs.push_back(w4);
-  init_tensor_temp(w5, "w5", -11, 0, 4, 4, 3, 3);
+  init_tensor_temp(w5, "w5", -11, 0, 1, 4, 4, 3, 3);
   inputs.push_back(w5);
-  init_tensor_temp(w6, "w6", -12, 0, 4, 4, 3, 3);
+  init_tensor_temp(w6, "w6", -12, 0, 1, 4, 4, 3, 3);
   inputs.push_back(w6);
-  init_tensor_temp(w7, "w7", -13, 0, 4, 4, 1, 3);
+  init_tensor_temp(w7, "w7", -13, 0, 1, 4, 4, 1, 3);
   inputs.push_back(w7);
-  init_tensor_temp(w8, "w8", -14, 0, 4, 4, 1, 3);
+  init_tensor_temp(w8, "w8", -14, 0, 1, 4, 4, 1, 3);
   inputs.push_back(w8);
-  init_tensor_temp(w9, "w9", -15, 0, 4, 4, 1, 3);
+  init_tensor_temp(w9, "w9", -15, 0, 1, 4, 4, 1, 3);
   inputs.push_back(w9);
-  init_tensor_temp(w10, "w10", -16, 0, 4, 4, 3, 1);
+  init_tensor_temp(w10, "w10", -16, 0, 1, 4, 4, 3, 1);
   inputs.push_back(w10);
-  init_tensor_temp(w11, "w12", -17, 0, 4, 4, 3, 1);
+  init_tensor_temp(w11, "w12", -17, 0, 1, 4, 4, 3, 1);
   inputs.push_back(w11);
-  init_tensor_temp(w12, "w12", -18, 0, 4, 4, 3, 1);
+  init_tensor_temp(w12, "w12", -18, 0, 1, 4, 4, 3, 1);
   inputs.push_back(w12);
-  init_tensor_temp(w13, "w13", -19, 0, 4, 1, 3, 3);
+  init_tensor_temp(w13, "w13", -19, 0, 1, 4, 1, 3, 3);
   inputs.push_back(w13);
 
-  // Create 0D scalar tensors
-  TensorTemp s0;
-  init_tensor_temp(s0, "s0", -20, 0);
-  inputs.push_back(s0);
   std::vector<OpTemp*> ops;
   ops.push_back(new Partition(0, 2));
   operator_names[ops.back()] = "Partition(0,2)";
-  ops.push_back(new Partition(2, 4));
-  operator_names[ops.back()] = "Partition(0,4)";
+  //ops.push_back(new Partition(0, 4));
+  //operator_names[ops.back()] = "Partition(0,4)";
   ops.push_back(new Partition(1, 2));
   operator_names[ops.back()] = "Partition(1,2)";
-  ops.push_back(new Partition(1, 4));
-  operator_names[ops.back()] = "Partition(1,4)";
+  //ops.push_back(new Partition(1, 4));
+  //operator_names[ops.back()] = "Partition(1,4)";
   ops.push_back(new Partition(2, 2));
-  operator_names[ops.back()] = "Partition(2)";
+  operator_names[ops.back()] = "Partition(2,2)";
+  //ops.push_back(new Partition(2, 4));
+  //operator_names[ops.back()] = "Partition(2,4)";
   ops.push_back(new Partition(3, 2));
-  operator_names[ops.back()] = "Partition(3)";
+  operator_names[ops.back()] = "Partition(3,2)";
+  //ops.push_back(new Partition(3, 4));
+  //operator_names[ops.back()] = "Partition(3,4)";
+  ops.push_back(new Partition(4, 2));
+  operator_names[ops.back()] = "Partition(4,2)";
   ops.push_back(new Combine(0, 2));
-  operator_names[ops.back()] = "Combine(0)";
+  operator_names[ops.back()] = "Combine(0,2)";
   ops.push_back(new Combine(1, 2));
-  operator_names[ops.back()] = "Combine(1)";
+  operator_names[ops.back()] = "Combine(1,2)";
   ops.push_back(new Combine(2, 2));
-  operator_names[ops.back()] = "Combine(2)";
+  operator_names[ops.back()] = "Combine(2,2)";
   ops.push_back(new Combine(3, 2));
-  operator_names[ops.back()] = "Combine(3)";
-  ops.push_back(new Replicate(2));
-  operator_names[ops.back()] = "Replicate";
-  ops.push_back(new MatmulTemp(AC_MODE_NONE));
-  operator_names[ops.back()] = "Matmul";
+  operator_names[ops.back()] = "Combine(3,2)";
+  ops.push_back(new Combine(4, 2));
+  operator_names[ops.back()] = "Combine(4,2)";
+  ops.push_back(new Replicate(0, 2));
+  operator_names[ops.back()] = "Replicate(0,2)";
+  ops.push_back(new Replicate(1, 2));
+  operator_names[ops.back()] = "Replicate(1,2)";
+  ops.push_back(new Replicate(2, 2));
+  operator_names[ops.back()] = "Replicate(2,2)";
+  ops.push_back(new Replicate(3, 2));
+  operator_names[ops.back()] = "Replicate(3,2)";
+  ops.push_back(new Replicate(4, 2));
+  operator_names[ops.back()] = "Replicate(4,2)";
+  ops.push_back(new Reduce(0, 2));
+  operator_names[ops.back()] = "Reduce(0,2)";
+  ops.push_back(new Reduce(1, 2));
+  operator_names[ops.back()] = "Reduce(1,2)";
+  ops.push_back(new Reduce(2, 2));
+  operator_names[ops.back()] = "Reduce(2,2)";
+  ops.push_back(new Reduce(3, 2));
+  operator_names[ops.back()] = "Reduce(3,2)";
+  ops.push_back(new Reduce(4, 2));
+  operator_names[ops.back()] = "Reduce(4,2)";
+  ops.push_back(new LinearTemp(AC_MODE_NONE));
+  operator_names[ops.back()] = "Linear";
+#ifdef DEADCODE
   ops.push_back(new ElementTemp(OP_EW_ADD));
   operator_names[ops.back()] = "EWAdd";
   ops.push_back(new ElementTemp(OP_EW_MUL));
@@ -1993,7 +2208,6 @@ int main(int argc, char **argv)
   operator_names[ops.back()] = "Pool3x3SA";
   ops.push_back(new Pool2DTemp(3, 3, 1, 1, true, OP_POOL2D_MAX));
   operator_names[ops.back()] = "Pool3x3SM";
-
   ops.push_back(new ConstantPoolTemp(w13.numDim, w13.dim));
   operator_names[ops.back()] = "Constant_Pool";
   ops.push_back(new ConstantIConvTemp(w4.numDim, w4.dim));
@@ -2020,21 +2234,27 @@ int main(int argc, char **argv)
   operator_names[ops.back()] = "Split_1";
   ops.push_back(new SplitTemp(2/*n*/, 0/*axis*/));
   operator_names[ops.back()] = "Split_0";
-  const int trans10[2] = {1, 0};
+#endif
+  //const int trans10[2] = {1, 0};
   // Should enable shuffle = true one
-  ops.push_back(new TransposeTemp(2/*n*/, trans10, false/*shuffle*/));
-  operator_names[ops.back()] = "Transpose_10";
-  ops.push_back(new TransposeTemp(2/*n*/, trans10, true/*shuffle*/));
-  operator_names[ops.back()] = "TransposeShuffle_10";
+  //ops.push_back(new TransposeTemp(2/*n*/, trans10, false/*shuffle*/));
+  //operator_names[ops.back()] = "Transpose_10";
+  //ops.push_back(new TransposeTemp(2/*n*/, trans10, true/*shuffle*/));
+  //operator_names[ops.back()] = "TransposeShuffle_10";
   // <test0>
-  Partition* part0 = new Partition(0, 2);
-  Partition* part1 = new Partition(1, 2);
+  Partition* part = new Partition(1, 2);
+  Replicate* repl = new Replicate(0, 2);
+  Combine* comb = new Combine(1, 2);
+  LinearTemp* linear = new LinearTemp(AC_MODE_NONE);
   TensorTemp o1, o2;
-  assert(part0->compute(x1, 0));
-  o1 = part0->outputs[0];
-  assert(part1->compute(x1, 0));
-  o2 = part1->outputs[0];
-  assert(!(o1==o2));
+  assert(part->compute(x1, 0));
+  assert(repl->compute(w1, 1));
+  assert(linear->compute(part->outputs[0], repl->outputs[0], 2));
+  assert(comb->compute(linear->outputs[0], 3));
+  o1 = comb->outputs[0];
+  assert(linear->compute(x1, w1, 0));
+  o2 = linear->outputs[0];
+  assert(o1==o2);
 #ifdef DEADCODE
   // <test1>
   MatmulTemp* matmul = new MatmulTemp(AC_MODE_NONE);

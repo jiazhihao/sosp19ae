@@ -45,7 +45,7 @@ using namespace std;
 
 namespace XFlow{
 
-#define MAX_DIM 4
+#define MAX_DIM 5
 #define MAX_NUM_SPLITS 32
 #define MAX_NUM_INPUTS 6
 #define MAX_NUM_OUTPUTS 6
@@ -355,7 +355,8 @@ enum OpType {
   OP_CONSTANT_POOL,
   OP_PARTITION,
   OP_COMBINE,
-  OP_REPLICATE
+  OP_REPLICATE,
+  OP_REDUCE,
 };
 
 //That this must be consistent with python/xflow/_cython/CCore.pxd
