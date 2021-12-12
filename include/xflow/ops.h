@@ -357,6 +357,7 @@ enum OpType {
   OP_COMBINE,
   OP_REPLICATE,
   OP_REDUCE,
+  OP_EMBEDDING,
 };
 
 //That this must be consistent with python/xflow/_cython/CCore.pxd

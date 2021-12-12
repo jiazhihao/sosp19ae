@@ -17,7 +17,7 @@
 #include "xflow/ops.h"
 #include "rules.pb.h"
 typedef int TYPE;
-#define MAX_SIZE 1600
+#define MAX_SIZE 256
 #define MAX_NUM_OPS 8
 #define MAX_NUM_TENSORS 8
 #define BATCHSIZE 2
@@ -78,6 +78,7 @@ struct TensorTemp {
       if (dim[i] % degree[i] != 0) return false;
     }
     if (dim[0] != degree[0]) return false;
+    if (size() > MAX_SIZE) return false;
     return true;
   }
   inline int size(void) const
@@ -1017,6 +1018,85 @@ public:
 public:
   int kernelH, kernelW, strideH, strideW;
   bool samePad;
+};
+
+class EmbeddingTemp : public OpTemp {
+public:
+  EmbeddingTemp(void)
+  : OpTemp(2, 1, OP_EMBEDDING)
+  {}
+  bool compute(int n, TensorTemp* inputs, int opIdx)
+  {
+    assert(false);
+    return false;
+  }
+  bool compute(const TensorTemp& x1, int opIdx)
+  {
+    assert(false);
+    return false;
+  }
+  bool compute(const TensorTemp& input, const TensorTemp& weight, int opIdx)
+  {
+#ifdef NO_SAME_INPUTS
+    if (input == weight) return false;
+#endif
+    if (input.numDim != 3 || weight.numDim != 3) return false;
+    assert(input.valid());
+    assert(weight.valid());
+    //if (input.dim[0] != BATCHSIZE) return false;
+    if (input.dim[2] != 1) return false;
+    if (input.degree[0] != weight.degree[1]) return false;
+    if (input.degree[1] != weight.degree[2]) return false;
+    if (input.degree[2] != weight.degree[0]) return false;
+    if (input.degree[0] != input.dim[0]) return false;
+    if (input.degree[1] != input.dim[1]) return false;
+    if (weight.degree[0] != weight.dim[0]) return false;
+    outputs[0].numDim = 3;
+    outputs[0].dim[0] = weight.degree[1];
+    outputs[0].dim[1] = input.dim[1];
+    outputs[0].dim[2] = weight.dim[2];
+    outputs[0].degree[0] = input.degree[0];
+    outputs[0].degree[1] = input.degree[2];
+    outputs[0].degree[2] = input.degree[1];
+    outputs[0].stride[0] = outputs[0].dim[1] * outputs[0].dim[2];
+    outputs[0].stride[1] = outputs[0].dim[2];
+    outputs[0].stride[2] = 1;
+    outputs[0].split[0] = SplitInfo::NO_SPLIT;
+    outputs[0].split[1] = input.split[1];
+    outputs[0].split[2] = weight.split[1];
+    assert(outputs[0].valid());
+    for (int i = 0; i < outputs[0].size(); i++)
+      outputs[0].data[i] = 0;
+    for (int repl_idx = 0; repl_idx < outputs[0].degree[0]; repl_idx++)
+      for (int batch_idx = 0; batch_idx < outputs[0].degree[1]; batch_idx++)
+        for (int out_idx = 0; out_idx < outputs[0].degree[2]; out_idx++) {
+          int batch_size = outputs[0].dim[1] / outputs[0].degree[1];
+          int output_size = outputs[0].dim[2] / outputs[0].degree[2];
+          int input_size = input.dim[2] / input.degree[2];
+          for (int i = 0; i < batch_size; i++)
+            for (int j = 0; j < output_size; j++)
+              for (int k = 0; k < input_size; k++) {
+                int value = input.get_value(out_idx, batch_idx * batch_size + i, repl_idx * input_size + k)
+                          * weight.get_value(batch_idx, out_idx * output_size + j, repl_idx * input_size + k);
+                outputs[0].add_value(repl_idx, batch_idx * batch_size + i, out_idx * output_size + j, value);
+              }
+        }
+    if (mode == AC_MODE_RELU) {
+      for (int i = 0; i < outputs[0].size(); i++)
+        outputs[0].data[i] = relu_function(outputs[0].data[i]);
+    } else if (mode == AC_MODE_SIGMOID) {
+      assert(false);
+    } else if (mode == AC_MODE_TANH) {
+      assert(false);
+    } else {
+      assert(mode == AC_MODE_NONE);
+    }
+    outputs[0].opIdx = opIdx;
+    outputs[0].tsIdx = 0;
+    return true;
+  }
+public:
+  ActiMode mode;
 };
 
 class LinearTemp : public OpTemp {
@@ -2124,6 +2204,7 @@ int main(int argc, char **argv)
   init_tensor_temp(w3, "w3", -6, 0, 1, 4, 4);
   inputs.push_back(w3);
   // Create 5D tensors
+#ifdef DEADCODE
   TensorTemp i1, i2, i3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14;
   init_tensor_temp(i1, "i1", -7, 0, 1, BATCHSIZE, 4, 5, 5);
   inputs.push_back(i1);
@@ -2151,6 +2232,7 @@ int main(int argc, char **argv)
   inputs.push_back(w12);
   init_tensor_temp(w13, "w13", -19, 0, 1, 4, 1, 3, 3);
   inputs.push_back(w13);
+#endif
 
   std::vector<OpTemp*> ops;
   ops.push_back(new Partition(0, 2));
