@@ -96,7 +96,7 @@ struct TensorTemp {
   inline TYPE get_value(int r, int n, int c, int h, int w) const
   {
     assert(numDim == 5);
-    int offset = n * stride[0] + c * stride[1] + h * stride[2] + w * stride[3];
+    int offset = r * stride[0] + n * stride[1] + c * stride[2] + h * stride[3] + w * stride[4];
     assert(offset >= 0 && offset < MAX_SIZE);
     return data[offset];
   }
@@ -122,6 +122,18 @@ struct TensorTemp {
     assert(n >= 0 && n < dim[1]);
     assert(c >= 0 && c < dim[2]);
     int offset = r * stride[0] + n * stride[1] + c * stride[2];
+    assert(offset >= 0 && offset < MAX_SIZE);
+    data[offset] += val;
+  }
+  inline void add_value(int r, int n, int c, int h, int w, TYPE val)
+  {
+    assert(numDim == 5);
+    assert(r >= 0 && r < dim[0]);
+    assert(n >= 0 && n < dim[1]);
+    assert(c >= 0 && c < dim[2]);
+    assert(h >= 0 && h < dim[3]);
+    assert(w >= 0 && w < dim[4]);
+    int offset = r * stride[0] + n * stride[1] + c * stride[2] + h * stride[3] + w * stride[4];
     assert(offset >= 0 && offset < MAX_SIZE);
     data[offset] += val;
   }
@@ -779,39 +791,54 @@ public:
   }
   bool compute(const TensorTemp& input, const TensorTemp& weight, int opIdx)
   {
-    if (input.numDim != 4 || weight.numDim != 4) return false;
-    if ((weight.dim[2] != kernelH) || (weight.dim[3] != kernelW)) return false;
-    if (input.degree[2] != weight.degree[2]) return false;
+    if (input.numDim != 5 || weight.numDim != 5) return false;
+    assert(input.valid());
+    assert(weight.valid());
+    if ((weight.dim[3] != kernelH) || (weight.dim[4] != kernelW)) return false;
     if (input.degree[3] != weight.degree[3]) return false;
+    if (input.degree[4] != weight.degree[4]) return false;
     //if (input.degree[0] != weight.numReplica) return false; //TODO
-    if (input.degree[1] != 1) return false;
+    //if (input.degree[1] != 1) return false;
     //if (weight.degree[0] != input.numReplica) return false; // TODO
-    if (weight.degree[1] != 1) return false;
+    //if (weight.degree[1] != 1) return false;
     //if (input.dim[0] != BATCHSIZE && input.dim[0] != 2 * BATCHSIZE) return false;
     //if (input.dim[1] != weight.dim[1]) return false;
-    if (input.dim[1] % weight.dim[1] != 0) return false;
-    int group = input.dim[1] / weight.dim[1];
-    if (weight.dim[0] % group != 0) return false;
+    if (input.dim[2] % weight.dim[2] != 0) return false;
+    int group = input.dim[2] / weight.dim[2];
+    if (weight.dim[1] % group != 0) return false;
     //if (weight.dim[0] == BATCHSIZE) return false;
+    // check degrees
+    if (input.degree[0] != weight.degree[1]) return false;
+    if (input.degree[1] != weight.degree[0]) return false;
+    if (input.degree[2] != weight.degree[2]) return false;
+    if (input.degree[3] != weight.degree[3]) return false;
+    if (input.degree[4] != weight.degree[4]) return false;
+    // Currently do not consider splitting across the height/width dims
+    if (input.degree[3] != 1) return false;
+    if (input.degree[4] != 1) return false;
+
     int padT, padL;
     if (samePad) {
-      outputs[0].numDim = 4;
+      outputs[0].numDim = 5;
       //outputs[0].numReplica = 1;
-      outputs[0].dim[0] = input.dim[0];
-      outputs[0].dim[1] = weight.dim[0];
-      outputs[0].dim[2] = (input.dim[2] + strideH - 1) / strideH;
-      outputs[0].dim[3] = (input.dim[3] + strideW - 1) / strideW;
-      outputs[0].degree[0] = input.degree[0];
-      outputs[0].degree[1] = weight.degree[0];
-      outputs[0].degree[2] = input.degree[2];
+      outputs[0].dim[0] = input.degree[2];
+      outputs[0].dim[1] = input.dim[1];
+      outputs[0].dim[2] = weight.dim[1];
+      outputs[0].dim[3] = (input.dim[3] + strideH - 1) / strideH;
+      outputs[0].dim[4] = (input.dim[4] + strideW - 1) / strideW;
+      outputs[0].degree[0] = input.degree[2];
+      outputs[0].degree[1] = input.degree[1];
+      outputs[0].degree[2] = input.degree[0];
       outputs[0].degree[3] = input.degree[3];
-      int padH = max((outputs[0].dim[2] - 1) * strideH + weight.dim[2]
-                     - input.dim[2], 0);
-      int padW = max((outputs[0].dim[3] - 1) * strideW + weight.dim[3]
+      outputs[0].degree[4] = input.degree[4];
+      int padH = max((outputs[0].dim[3] - 1) * strideH + weight.dim[3]
                      - input.dim[3], 0);
+      int padW = max((outputs[0].dim[4] - 1) * strideW + weight.dim[4]
+                     - input.dim[4], 0);
       padT = padH / 2;
       padL = padW / 2;
     } else {
+      assert(false);
       outputs[0].numDim = 4;
       //outputs[0].numReplica = 1;
       outputs[0].dim[0] = input.dim[0];
@@ -825,16 +852,51 @@ public:
       padT = 0;
       padL = 0;
     }
-    outputs[0].stride[3] = 1;
-    outputs[0].stride[2] = outputs[0].stride[3] * outputs[0].dim[3];
-    outputs[0].stride[1] = outputs[0].stride[2] * outputs[0].dim[2];
-    outputs[0].stride[0] = outputs[0].stride[1] * outputs[0].dim[1];
-    outputs[0].split[0] = input.split[0];
-    outputs[0].split[1] = weight.split[0];
-    outputs[0].split[2] = input.split[2];
+    outputs[0].stride[4] = 1;
+    for (int i = 3; i >= 0; i--)
+      outputs[0].stride[i] = outputs[0].stride[i+1] * outputs[0].dim[i+1];
+    outputs[0].split[0] = SplitInfo::NO_SPLIT;
+    outputs[0].split[1] = input.split[1];
+    outputs[0].split[2] = weight.split[1];
     outputs[0].split[3] = input.split[3];
+    outputs[0].split[4] = input.split[4];
 
     if (outputs[0].size() > MAX_SIZE) return false;
+    assert(outputs[0].valid());
+    for (int i = 0; i < outputs[0].size(); i++)
+      outputs[0].data[i] = 0;
+    int reduce_size = input.dim[2] / input.degree[2];
+    for (int repl_idx = 0; repl_idx < outputs[0].degree[0]; repl_idx++)
+      for (int batch_idx = 0; batch_idx < outputs[0].degree[1]; batch_idx++)
+        for (int out_idx = 0; out_idx < outputs[0].degree[2]; out_idx++)
+          for (int h = 0; h < outputs[0].dim[3]; h++)
+            for (int w = 0; w < outputs[0].dim[4]; w++) {
+              int batch_size = outputs[0].dim[1] / outputs[0].degree[1];
+              int output_size = outputs[0].dim[2] / outputs[0].degree[2];
+              int input_size = input.dim[2] / input.degree[2];
+              for (int i = 0; i < batch_size; i++)
+                for (int j = 0; j < output_size; j++)
+                  for (int k = 0; k < input_size; k++)
+                    for (int kh = 0; kh < weight.dim[3]; kh ++)
+                      for (int kw = 0; kw < weight.dim[4]; kw ++) {
+                        int posH = h * strideH + kh - padT;
+                        int posW = w * strideW + kw - padL;
+                        assert(posH >= -padT && posH <= input.dim[3] + padT);
+                        assert(posW >= -padL && posW <= input.dim[4] + padL);
+                        if ((posH >= 0) && (posH < input.dim[3])
+                        && (posW >= 0) && (posW < input.dim[4])) {
+                          int inputVal = input.get_value(out_idx, batch_idx * batch_size + i, repl_idx * input_size + k, posH, posW);
+                          int weightVal = weight.get_value(batch_idx, out_idx * output_size + j, repl_idx * input_size + k, kh, kw);
+                          outputs[0].add_value(repl_idx, batch_idx * batch_size + i, out_idx * output_size + j, h, w, inputVal * weightVal);
+                       }
+
+                    }
+            }
+    if (relu) {
+      for (int i = 0; i < outputs[0].size(); i++)
+        outputs[0].data[i] = relu_function(outputs[0].data[i]);
+    } 
+#ifdef DEADCODE
     for (int n = 0; n < outputs[0].dim[0]; n++)
       for (int c = 0; c < outputs[0].dim[1]; c++)
         for (int h = 0; h < outputs[0].dim[2]; h++)
@@ -858,6 +920,7 @@ public:
             if (relu) val = relu_function(val);
             outputs[0].set_value(n, c, h, w, val);
           }
+#endif
     outputs[0].opIdx = opIdx;
     outputs[0].tsIdx = 0;
     return true;
@@ -2204,20 +2267,20 @@ int main(int argc, char **argv)
   init_tensor_temp(w3, "w3", -6, 0, 1, 4, 4);
   inputs.push_back(w3);
   // Create 5D tensors
-#ifdef DEADCODE
   TensorTemp i1, i2, i3, w4, w5, w6, w7, w8, w9, w10, w11, w12, w13, w14;
   init_tensor_temp(i1, "i1", -7, 0, 1, BATCHSIZE, 4, 5, 5);
   inputs.push_back(i1);
-  init_tensor_temp(i2, "i2", -8, 0, 1, BATCHSIZE, 4, 5, 5);
-  inputs.push_back(i2);
-  init_tensor_temp(i3, "i3", -9, 0, 1, BATCHSIZE, 4, 5, 5);
-  inputs.push_back(i3);
-  init_tensor_temp(w4, "w4", -10, 0, 1, 4, 4, 3, 3);
+  //init_tensor_temp(i2, "i2", -8, 0, 1, BATCHSIZE, 4, 5, 5);
+  //inputs.push_back(i2);
+  //init_tensor_temp(i3, "i3", -9, 0, 1, BATCHSIZE, 4, 5, 5);
+  //inputs.push_back(i3);
+  init_tensor_temp(w4, "w4", -10, 0, 1, 2, 4, 3, 3);
   inputs.push_back(w4);
-  init_tensor_temp(w5, "w5", -11, 0, 1, 4, 4, 3, 3);
-  inputs.push_back(w5);
-  init_tensor_temp(w6, "w6", -12, 0, 1, 4, 4, 3, 3);
-  inputs.push_back(w6);
+  //init_tensor_temp(w5, "w5", -11, 0, 1, 2, 4, 3, 3);
+  //inputs.push_back(w5);
+  //init_tensor_temp(w6, "w6", -12, 0, 1, 2, 4, 3, 3);
+  //inputs.push_back(w6);
+#ifdef DEADCODE
   init_tensor_temp(w7, "w7", -13, 0, 1, 4, 4, 1, 3);
   inputs.push_back(w7);
   init_tensor_temp(w8, "w8", -14, 0, 1, 4, 4, 1, 3);
@@ -2305,31 +2368,30 @@ int main(int argc, char **argv)
   operator_names[ops.back()] = "Split_1";
   ops.push_back(new SplitTemp(2/*n*/, 0/*axis*/));
   operator_names[ops.back()] = "Split_0";
-#ifdef DEADCODE
-  ops.push_back(new Conv2DTemp(3, 3, 1, 1, true, false));
-  operator_names[ops.back()] = "Conv3x3S";
+  //ops.push_back(new Conv2DTemp(3, 3, 1, 1, true, false));
+  //operator_names[ops.back()] = "Conv3x3S";
   ops.push_back(new Conv2DTemp(3, 3, 1, 1, true, true));
   operator_names[ops.back()] = "Conv3x3SR";
-  ops.push_back(new Conv2DTemp(1, 3, 1, 1, true, false));
-  operator_names[ops.back()] = "Conv1x3S";
-  ops.push_back(new Conv2DTemp(1, 3, 1, 1, true, true));
-  operator_names[ops.back()] = "Conv1x3SR";
-  ops.push_back(new Conv2DTemp(3, 1, 1, 1, true, false));
-  operator_names[ops.back()] = "Conv3x1S";
-  ops.push_back(new Conv2DTemp(3, 1, 1, 1, true, true));
-  operator_names[ops.back()] = "Conv3x1SR";
+  //ops.push_back(new Conv2DTemp(1, 3, 1, 1, true, false));
+  //operator_names[ops.back()] = "Conv1x3S";
+  //ops.push_back(new Conv2DTemp(1, 3, 1, 1, true, true));
+  //operator_names[ops.back()] = "Conv1x3SR";
+  //ops.push_back(new Conv2DTemp(3, 1, 1, 1, true, false));
+  //operator_names[ops.back()] = "Conv3x1S";
+  //ops.push_back(new Conv2DTemp(3, 1, 1, 1, true, true));
+  //operator_names[ops.back()] = "Conv3x1SR";
   ops.push_back(new Pool2DTemp(3, 3, 1, 1, true, OP_POOL2D_AVG));
   operator_names[ops.back()] = "Pool3x3SA";
   ops.push_back(new Pool2DTemp(3, 3, 1, 1, true, OP_POOL2D_MAX));
   operator_names[ops.back()] = "Pool3x3SM";
-  ops.push_back(new ConstantPoolTemp(w13.numDim, w13.dim));
-  operator_names[ops.back()] = "Constant_Pool";
-  ops.push_back(new ConstantIConvTemp(w4.numDim, w4.dim));
-  operator_names[ops.back()] = "Constant_IConv";
-  ops.push_back(new ConstantIMMTemp(w1.numDim, w1.dim));
-  operator_names[ops.back()] = "Constant_IMM";
-  ops.push_back(new ConstantOneTemp(i1.numDim, i1.dim));
-  operator_names[ops.back()] = "Constant_One";
+  //ops.push_back(new ConstantPoolTemp(w13.numDim, w13.dim));
+  //operator_names[ops.back()] = "Constant_Pool";
+  //ops.push_back(new ConstantIConvTemp(w4.numDim, w4.dim));
+  //operator_names[ops.back()] = "Constant_IConv";
+  //ops.push_back(new ConstantIMMTemp(w1.numDim, w1.dim));
+  //operator_names[ops.back()] = "Constant_IMM";
+  //ops.push_back(new ConstantOneTemp(i1.numDim, i1.dim));
+  //operator_names[ops.back()] = "Constant_One";
   //ops.push_back(new EnlargeConvTemp(3, 3));
   //operator_names[ops.back()] = "Enlarge3x3";
   ops.push_back(new ScalarMulTemp());
@@ -2338,13 +2400,23 @@ int main(int argc, char **argv)
   operator_names[ops.back()] = "Concat_1";
   ops.push_back(new ConcatTemp(2/*n*/, 4/*numDim*/, 0/*axis*/));
   operator_names[ops.back()] = "Concat_0";
-#endif
   //const int trans10[2] = {1, 0};
   // Should enable shuffle = true one
   //ops.push_back(new TransposeTemp(2/*n*/, trans10, false/*shuffle*/));
   //operator_names[ops.back()] = "Transpose_10";
   //ops.push_back(new TransposeTemp(2/*n*/, trans10, true/*shuffle*/));
   //operator_names[ops.back()] = "TransposeShuffle_10";
+  // <test0>
+  Conv2DTemp* conv = new Conv2DTemp(3, 3, 1, 1, true, true);
+  Partition* part = new Partition(1, 2);
+  Replicate* repl = new Replicate(0, 2);
+  Combine* comb = new Combine(1, 2);
+  assert(part->compute(i1, 0));
+  assert(repl->compute(w4, 1));
+  assert(conv->compute(part->outputs[0], repl->outputs[0], 2));
+  assert(comb->compute(conv->outputs[0], 3));
+  assert(conv->compute(i1, w4, 0));
+  assert(comb->outputs[0] == conv->outputs[0]);
 #ifdef DEADCODE
   // <test0>
   Partition* part = new Partition(1, 2);
